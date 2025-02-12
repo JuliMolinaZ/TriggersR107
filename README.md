@@ -1,12 +1,3 @@
-# Trigger y Pruebas para Actualización de Stock y Logs
-
-## Trigger de Actualización de `PickListDetalle`
-
-Este trigger maneja la actualización de los campos en la tabla `PickListDetalle` y la actualización de los valores correspondientes en la tabla `ProductosUbicacion`. Además, registra los cambios en la tabla `LogsSurtido`.
-
-### Trigger:
-
-```sql
 DELIMITER $$
 
 DROP TRIGGER IF EXISTS trg_update_recolectado_picklist $$
@@ -19,13 +10,17 @@ BEGIN
     DECLARE nuevo_status_producto VARCHAR(10);
     DECLARE current_stock INT;
 
-    -- Verificar si Recolectado es impar (1, 3, 5, 7, etc.) al momento de la actualización
+    -- Verificamos si Recolectado es impar (1, 3, 5, 7, etc.)
     IF NEW.Recolectado % 2 = 1 THEN
-        -- Actualizar SurtidoAcumulado con el valor de CantidadSurtida enviada
-        SET NEW.SurtidoAcumulado = NEW.CantidadSurtida;  
-        
-        -- Sumar CantidadSurtida a la cantidad previamente surtida
-        SET NEW.CantidadSurtida = OLD.CantidadSurtida + NEW.CantidadSurtida;
+        -- Primera vez (cuando Recolectado pasa a 1)
+        IF OLD.CantidadSurtida IS NULL OR OLD.CantidadSurtida = 0 THEN
+            SET NEW.CantidadSurtida = NEW.CantidadSurtida;
+            SET NEW.SurtidoAcumulado = NEW.CantidadSurtida;
+        ELSE
+            -- Despues de primera actualizacion: acumulamos CantidadSurtida con CantidadRestante
+            SET NEW.CantidadSurtida = OLD.CantidadSurtida + NEW.CantidadRestante; 
+            SET NEW.SurtidoAcumulado = NEW.CantidadRestante;
+        END IF;
 
         -- Calcular la cantidad restante 
         SET nueva_cantidad_restante = GREATEST(OLD.CantidadRequerida - NEW.CantidadSurtida, 0);
@@ -37,7 +32,7 @@ BEGIN
             SET nuevo_status_producto = 'Parcial';
         END IF;
 
-        -- Asignar los valores a NEW
+        -- Asignamos los valores calculados
         SET NEW.CantidadRestante = nueva_cantidad_restante;
         SET NEW.StatusProducto = nuevo_status_producto;
 
@@ -47,16 +42,16 @@ BEGIN
             SET StatusPickList = 'Recolectado'
             WHERE PickListID = NEW.PickListID;
         END IF;
-        
-        -- Obtener el valor actual de Stock desde ProductosUbicacion
+
+        -- Seleccionar el Stock desde ProductosUbicacion utilizando ProductoUbicacionID
         SELECT Stock INTO current_stock
         FROM ProductosUbicacion
-        WHERE ProductoID = NEW.ProductoID AND UbicacionID = NEW.UbicacionID;
+        WHERE ProductoID = NEW.ProductoID AND ProductoUbicacionID = NEW.UbicacionID;
 
-        -- Actualización Stock
+        -- Actualización del Stock
         UPDATE ProductosUbicacion
         SET Stock = Stock - NEW.SurtidoAcumulado
-        WHERE ProductoID = NEW.ProductoID AND UbicacionID = NEW.UbicacionID;
+        WHERE ProductoID = NEW.ProductoID AND ProductoUbicacionID = NEW.UbicacionID;
 
         -- Insertar en la tabla de logs
         INSERT INTO LogsSurtido (
@@ -66,12 +61,12 @@ BEGIN
         ) 
         VALUES (
             NEW.Recolectado, 
-            current_stock - NEW.SurtidoAcumulado, 
+            (SELECT Stock FROM ProductosUbicacion WHERE ProductoID = NEW.ProductoID AND ProductoUbicacionID = NEW.UbicacionID), 
             NEW.SurtidoAcumulado, 
             OLD.Recolectado, 
             current_stock, 
             OLD.SurtidoAcumulado, 
-            NOW(), 
+            DATE_SUB(NOW(), INTERVAL -6 HOUR),
             NEW.PickListDetalleID, 
             NEW.ProductoID
         );
@@ -80,10 +75,14 @@ BEGIN
         SET NEW.Recolectado = NEW.Recolectado + 1;
 
     ELSE
-        -- Si Recolectado es par, eliminar el valor de SurtidoAcumulado
-        SET NEW.SurtidoAcumulado = NULL; 
+        -- Si Recolectado es par, no se permite ninguna actualización
+        -- Mantener los valores anteriores, sin hacer cambios
+        SET NEW.CantidadSurtida = OLD.CantidadSurtida;
+        SET NEW.SurtidoAcumulado = OLD.SurtidoAcumulado;
+        SET NEW.CantidadRestante = OLD.CantidadRestante; 
     END IF;
 
 END $$
 
 DELIMITER ;
+```

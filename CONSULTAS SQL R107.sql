@@ -1,4 +1,6 @@
--- TRIGGER
+DELIMITER $$
+
+DROP TRIGGER IF EXISTS trg_update_recolectado_picklist $$
 
 CREATE TRIGGER trg_update_recolectado_picklist
 BEFORE UPDATE ON PickListDetalle
@@ -8,13 +10,17 @@ BEGIN
     DECLARE nuevo_status_producto VARCHAR(10);
     DECLARE current_stock INT;
 
-    -- Verificar si Recolectado es impar (1, 3, 5, 7, etc.) al momento de la actualización
+    -- Verificamos si Recolectado es impar (1, 3, 5, 7, etc.)
     IF NEW.Recolectado % 2 = 1 THEN
-    	-- Actualizar SurtidoAcumulado con el valor de CantidadSurtida enviada
-        SET NEW.SurtidoAcumulado = NEW.CantidadSurtida;  
-        
-        -- Sumar CantidadSurtida a la cantidad previamente surtida
-        SET NEW.CantidadSurtida = OLD.CantidadSurtida + NEW.CantidadSurtida;
+        -- Primera vez (cuando Recolectado pasa a 1)
+        IF OLD.CantidadSurtida IS NULL OR OLD.CantidadSurtida = 0 THEN
+            SET NEW.CantidadSurtida = NEW.CantidadSurtida;
+            SET NEW.SurtidoAcumulado = NEW.CantidadSurtida;
+        ELSE
+            -- Despues de primera actualizacion: acumulamos CantidadSurtida con CantidadRestante
+            SET NEW.CantidadSurtida = OLD.CantidadSurtida + NEW.CantidadRestante; 
+            SET NEW.SurtidoAcumulado = NEW.CantidadRestante;
+        END IF;
 
         -- Calcular la cantidad restante 
         SET nueva_cantidad_restante = GREATEST(OLD.CantidadRequerida - NEW.CantidadSurtida, 0);
@@ -26,7 +32,7 @@ BEGIN
             SET nuevo_status_producto = 'Parcial';
         END IF;
 
-        -- Asignar los valores a NEW
+        -- Asignamos los valores calculados
         SET NEW.CantidadRestante = nueva_cantidad_restante;
         SET NEW.StatusProducto = nuevo_status_producto;
 
@@ -36,15 +42,16 @@ BEGIN
             SET StatusPickList = 'Recolectado'
             WHERE PickListID = NEW.PickListID;
         END IF;
-        
+
+        -- Seleccionar el Stock desde ProductosUbicacion utilizando ProductoUbicacionID
         SELECT Stock INTO current_stock
         FROM ProductosUbicacion
-        WHERE ProductoID = NEW.ProductoID AND UbicacionID = NEW.UbicacionID;
+        WHERE ProductoID = NEW.ProductoID AND ProductoUbicacionID = NEW.UbicacionID;
 
-        -- Actualizacion Stock
+        -- Actualización del Stock
         UPDATE ProductosUbicacion
         SET Stock = Stock - NEW.SurtidoAcumulado
-        WHERE ProductoID = NEW.ProductoID AND UbicacionID = NEW.UbicacionID;
+        WHERE ProductoID = NEW.ProductoID AND ProductoUbicacionID = NEW.UbicacionID;
 
         -- Insertar en la tabla de logs
         INSERT INTO LogsSurtido (
@@ -54,12 +61,12 @@ BEGIN
         ) 
         VALUES (
             NEW.Recolectado, 
-            (SELECT Stock FROM ProductosUbicacion WHERE ProductoID = NEW.ProductoID AND UbicacionID = NEW.UbicacionID), 
+            (SELECT Stock FROM ProductosUbicacion WHERE ProductoID = NEW.ProductoID AND ProductoUbicacionID = NEW.UbicacionID), 
             NEW.SurtidoAcumulado, 
             OLD.Recolectado, 
             current_stock, 
             OLD.SurtidoAcumulado, 
-            NOW(), 
+            DATE_SUB(NOW(), INTERVAL -6 HOUR),
             NEW.PickListDetalleID, 
             NEW.ProductoID
         );
@@ -68,11 +75,19 @@ BEGIN
         SET NEW.Recolectado = NEW.Recolectado + 1;
 
     ELSE
-        -- Si Recolectado es par, eliminar el valor de SurtidoAcumulado
-        SET NEW.SurtidoAcumulado = NULL; 
+        -- Si Recolectado es par, no se permite ninguna actualización
+        -- Mantener los valores anteriores, sin hacer cambios
+        SET NEW.CantidadSurtida = OLD.CantidadSurtida;
+        SET NEW.SurtidoAcumulado = OLD.SurtidoAcumulado;
+        SET NEW.CantidadRestante = OLD.CantidadRestante; 
     END IF;
 
-END;
+END $$
+
+DELIMITER ;
+
+
+
 
 
 
@@ -81,11 +96,11 @@ END;
 -- Prueba 1
 UPDATE PickListDetalle 
 SET CantidadSurtida = 10, Recolectado = 1 
-WHERE PickListID = 'PL100' AND UbicacionID = 'UB100';
+WHERE PickListID = 'PL100' AND UbicacionID = 'PU100';
 
-SELECT * FROM `PickListDetalle` WHERE PickListID = 'PL100' AND UbicacionID = 'UB100';
+SELECT * FROM `PickListDetalle` WHERE PickListID = 'PL100' AND UbicacionID = 'PU100';
 
-SELECT * FROM `ProductosUbicacion` WHERE ProductoID = 'PRD100' AND UbicacionID = 'UB100';
+SELECT * FROM `ProductosUbicacion` WHERE ProductoID = 'PRD100' AND ProductoUbicacionID = 'PU100';
 
 
 
@@ -113,13 +128,25 @@ SELECT * FROM `ProductosUbicacion` WHERE ProductoID = 'PRD100' AND UbicacionID =
 -- ACTUALIZACIONES VALORES 0
 
 
-UPDATE PickListDetalle SET CantidadSurtida = 0, Recolectado = 0, StatusProducto = 'Pendiente', CantidadRestante = 25 WHERE PickListID = 'PL100' AND UbicacionID = 'UB100';
-SELECT * FROM `PickListDetalle` WHERE PickListID = 'PL100' AND UbicacionID = 'UB100';
+UPDATE PickListDetalle SET CantidadSurtida = 0, Recolectado = 0, StatusProducto = 'Pendiente', CantidadRestante = 25 WHERE PickListID = 'PL100' AND UbicacionID = 'PU100';
+
+UPDATE PickListDetalle SET CantidadSurtida = 0, Recolectado = 0, StatusProducto = 'Pendiente', CantidadRestante = 30 WHERE PickListID = 'PL100' AND UbicacionID = 'PU200';
 
 
-SELECT * FROM `ProductosUbicacion` WHERE ProductoID = 'PRD100' AND UbicacionID = 'UB100';
+SELECT * FROM `PickListDetalle` WHERE PickListID = 'PL100' AND UbicacionID = 'PU100';
+
+SELECT * FROM `PickList` WHERE PickListID = 'PL100';
+
+SELECT * FROM `ProductosUbicacion` WHERE ProductoID = 'PRD100' AND ProductoUbicacionID = 'PU100';
 
 
 
+
+
+SELECT * FROM `PickListDetalle` WHERE PickListID = 'PL100' AND UbicacionID = 'PU100';
+
+SELECT * FROM `PickList` WHERE PickListID = 'PL100';
+
+SELECT * FROM `ProductosUbicacion` WHERE ProductoID = 'PRD200' AND ProductoUbicacionID = 'PU100';
 
 
